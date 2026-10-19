@@ -5,44 +5,90 @@ export type Database = {
   
   "public": {
           Tables: {
-            "profiles": {
+            "members": {
                   Row: {
-                    "avatar_url": string | null,"created_at": string,"full_name": string | null,"id": string,"updated_at": string,"username": string | null,"website": string | null
+                    "batch_year": number,"dept": string,"email": string,"is_active": boolean,"joined_on": string,"name": string,"role": string,"uid": number,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "avatar_url"?: string | null,"created_at"?: string,"full_name"?: string | null,"id"?: string,"updated_at"?: string,"username"?: string | null,"website"?: string | null
+                    "batch_year": number,"dept": string,"email": string,"is_active"?: boolean,"joined_on"?: string,"name": string,"role": string,"uid"?: never,"updated_at"?: string
                   }
                   Update: {
-                    "avatar_url"?: string | null,"created_at"?: string,"full_name"?: string | null,"id"?: string,"updated_at"?: string,"username"?: string | null,"website"?: string | null
+                    "batch_year"?: number,"dept"?: string,"email"?: string,"is_active"?: boolean,"joined_on"?: string,"name"?: string,"role"?: string,"uid"?: never,"updated_at"?: string
                   }
                   Relationships: [
                     
                   ]
-                },"user_settings": {
+                },"project_members": {
                   Row: {
-                    "created_at": string,"id": string,"notifications_enabled": boolean,"profile_id": string,"theme": string,"updated_at": string
+                    "joined_on": string,"pid": number,"uid": number
                   }
                   ComputedFields: never
                   Insert: {
-                    "created_at"?: string,"id"?: string,"notifications_enabled"?: boolean,"profile_id": string,"theme"?: string,"updated_at"?: string
+                    "joined_on"?: string,"pid": number,"uid": number
                   }
                   Update: {
-                    "created_at"?: string,"id"?: string,"notifications_enabled"?: boolean,"profile_id"?: string,"theme"?: string,"updated_at"?: string
+                    "joined_on"?: string,"pid"?: number,"uid"?: number
                   }
                   Relationships: [
                     {
-      foreignKeyName: "user_settings_profile_id_fkey"
-      columns: ["profile_id"]
+      foreignKeyName: "project_members_pid_fkey"
+      columns: ["pid"]
 isOneToOne: false
-      referencedRelation: "profiles"
-      referencedColumns: ["id"]
+      referencedRelation: "member_projects"
+      referencedColumns: ["pid"]
+    },{
+      foreignKeyName: "project_members_pid_fkey"
+      columns: ["pid"]
+isOneToOne: false
+      referencedRelation: "projects"
+      referencedColumns: ["pid"]
+    },{
+      foreignKeyName: "project_members_uid_fkey"
+      columns: ["uid"]
+isOneToOne: false
+      referencedRelation: "members"
+      referencedColumns: ["uid"]
+    }
+                  ]
+                },"projects": {
+                  Row: {
+                    "created_at": string,"end_date": string | null,"pid": number,"ps": string | null,"start_date": string,"status": string,"team_lead": number | null,"title": string,"updated_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"end_date"?: string | null,"pid"?: never,"ps"?: string | null,"start_date": string,"status"?: string,"team_lead"?: number | null,"title": string,"updated_at"?: string
+                  }
+                  Update: {
+                    "created_at"?: string,"end_date"?: string | null,"pid"?: never,"ps"?: string | null,"start_date"?: string,"status"?: string,"team_lead"?: number | null,"title"?: string,"updated_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "projects_team_lead_fkey"
+      columns: ["team_lead"]
+isOneToOne: false
+      referencedRelation: "members"
+      referencedColumns: ["uid"]
     }
                   ]
                 }
           }
           Views: {
-            [_ in never]: never
+            "member_projects": {
+                  Row: {
+                    "is_current": boolean | null,"pid": number | null,"status": string | null,"title": string | null,"uid": number | null
+                  }
+                  ComputedFields: never
+                  Relationships: [
+                    {
+      foreignKeyName: "project_members_uid_fkey"
+      columns: ["uid"]
+isOneToOne: false
+      referencedRelation: "members"
+      referencedColumns: ["uid"]
+    }
+                  ]
+                }
           }
           Functions: {
             [_ in never]: never
