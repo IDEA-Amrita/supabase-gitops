@@ -18,10 +18,10 @@ Provides reliable bi-directional synchronization between GitHub and Supabase:
 ## Quickstart
 
 ### Step 1: Fork and Clone
-Fork this repository to your GitHub account and clone your fork locally:
+Fork this repository to your GitHub account and clone your fork locally (replace `<your-username>` with your GitHub username):
 
 ```bash
-git clone https://github.com/AniruthKarthik/supabase-gitops.git
+git clone https://github.com/<your-username>/supabase-gitops.git
 cd supabase-gitops
 ```
 
@@ -42,7 +42,49 @@ Go to your repo: **Settings > Secrets and variables > Actions > New repository s
 ### Step 3: Configure Workflow Permissions
 In repository **Settings > Actions > General > Workflow permissions**, select **"Read and write permissions"** so GitHub Actions can commit updated TypeScript definitions and schema documentation.
 
-### Step 4: (Optional) Enable Scheduled Workflows
+### Step 4: Initialize Migrations (First-Time Setup / Baselining)
+By default, this repository ships with an empty `supabase/migrations/` directory so you can connect to your project without conflicting starter migrations.
+
+Choose the path that matches your project:
+
+#### Path A: Adopting an Existing (Live) Supabase Project (Baselining)
+If your Supabase project already has tables, functions, or prior migrations applied, **do not run drift capture or deploy right away**. First create a clean baseline of your remote database:
+
+```bash
+# 1. Export your remote database schema as your initial baseline migration
+TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
+supabase db dump --db-url "$SUPABASE_DB_URL" --schema public -f "supabase/migrations/${TIMESTAMP}_baseline.sql"
+
+# 2. Tell Supabase the baseline is already applied on the remote database
+supabase migration repair --status applied "$TIMESTAMP" --db-url "$SUPABASE_DB_URL"
+
+# 3. If remote history contains obsolete migration versions not in your repo, mark them reverted:
+# (Run `supabase migration list --db-url "$SUPABASE_DB_URL"` to view unmanaged remote versions)
+# supabase migration repair --status reverted <OLD_VERSION_ID> --db-url "$SUPABASE_DB_URL"
+
+# 4. Commit and push your baseline
+git add supabase/migrations/
+git commit -m "chore: baseline initial database schema"
+git push origin master
+```
+
+#### Path B: Starting a Brand-New / Empty Supabase Project
+If you are starting from a completely fresh database and building a new schema from scratch:
+
+```bash
+# 1. Generate a new migration file
+supabase migration new initial_schema
+
+# 2. Write your DDL / SQL statements in supabase/migrations/<timestamp>_initial_schema.sql
+
+# 3. Commit and push to master
+git add supabase/migrations/
+git commit -m "feat: add initial schema"
+git push origin master
+```
+*To deploy your new migrations, run the **Deploy database migrations** workflow in GitHub Actions (or enable `AUTO_DEPLOY=true`).*
+
+### Step 5: (Optional) Enable Scheduled Workflows
 By default, **no workflows run on a schedule** to avoid consuming runner minutes or running before configuration. All workflows can be triggered manually on-demand at any time.
 
 To activate automated recurring runs, navigate to **Settings > Secrets and variables > Actions > Variables** and create any of the following repository variables:
@@ -80,9 +122,7 @@ scripts/
 supabase/
   config.toml                    # Supabase CLI project configuration
   seed.sql                       # Sample seed data for local development
-  migrations/
-    20261019000000_initial.sql   # Starter migration (profiles table with RLS)
-    20261019120000_user_settings.sql # User settings table with foreign key and RLS
+  migrations/                    # Version-controlled migration files (empty by default)
 types/
   database.types.ts              # Auto-generated TypeScript definitions
 ```
