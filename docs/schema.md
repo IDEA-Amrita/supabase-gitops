@@ -1,6 +1,6 @@
 # Database Schema Documentation
 
-> Auto-generated from database schema on `2026-10-19 18:59:48 UTC`.
+> Auto-generated from database schema on `2026-10-20 08:13:42 UTC`.
 
 ## Entity Relationship Diagram
 
@@ -19,6 +19,8 @@ erDiagram
         boolean is_active
         timestamp_with_time_zone joined_on
         timestamp_with_time_zone updated_at
+        text roll_no
+        text ph_no
     }
     project_members {
         smallint pid PK
@@ -55,6 +57,8 @@ erDiagram
 | `is_active` | `boolean` | NO | `true` | - |
 | `joined_on` | `timestamp with time zone` | NO | `now()` | - |
 | `updated_at` | `timestamp with time zone` | NO | `now()` | - |
+| `roll_no` | `text` | NO | - | - |
+| `ph_no` | `text` | YES | - | - |
 
 ### `project_members`
 
