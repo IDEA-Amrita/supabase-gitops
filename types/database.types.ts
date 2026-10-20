@@ -7,14 +7,14 @@ export type Database = {
           Tables: {
             "members": {
                   Row: {
-                    "batch_year": number,"dept": string,"email": string,"is_active": boolean,"joined_on": string,"name": string,"role": string,"uid": number,"updated_at": string
+                    "batch_year": number,"dept": string,"email": string,"is_active": boolean,"joined_on": string,"name": string,"ph_no": string | null,"role": string,"roll_no": string,"uid": number,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "batch_year": number,"dept": string,"email": string,"is_active"?: boolean,"joined_on"?: string,"name": string,"role": string,"uid"?: never,"updated_at"?: string
+                    "batch_year": number,"dept": string,"email": string,"is_active"?: boolean,"joined_on"?: string,"name": string,"ph_no"?: string | null,"role": string,"roll_no": string,"uid"?: never,"updated_at"?: string
                   }
                   Update: {
-                    "batch_year"?: number,"dept"?: string,"email"?: string,"is_active"?: boolean,"joined_on"?: string,"name"?: string,"role"?: string,"uid"?: never,"updated_at"?: string
+                    "batch_year"?: number,"dept"?: string,"email"?: string,"is_active"?: boolean,"joined_on"?: string,"name"?: string,"ph_no"?: string | null,"role"?: string,"roll_no"?: string,"uid"?: never,"updated_at"?: string
                   }
                   Relationships: [
                     
@@ -32,12 +32,6 @@ export type Database = {
                   }
                   Relationships: [
                     {
-      foreignKeyName: "project_members_pid_fkey"
-      columns: ["pid"]
-isOneToOne: false
-      referencedRelation: "member_projects"
-      referencedColumns: ["pid"]
-    },{
       foreignKeyName: "project_members_pid_fkey"
       columns: ["pid"]
 isOneToOne: false
@@ -76,17 +70,11 @@ isOneToOne: false
           Views: {
             "member_projects": {
                   Row: {
-                    "is_current": boolean | null,"pid": number | null,"status": string | null,"title": string | null,"uid": number | null
+                    "is_current": boolean | null,"is_lead": boolean | null,"pid": number | null,"status": string | null,"title": string | null,"uid": number | null
                   }
                   ComputedFields: never
                   Relationships: [
-                    {
-      foreignKeyName: "project_members_uid_fkey"
-      columns: ["uid"]
-isOneToOne: false
-      referencedRelation: "members"
-      referencedColumns: ["uid"]
-    }
+                    
                   ]
                 }
           }
