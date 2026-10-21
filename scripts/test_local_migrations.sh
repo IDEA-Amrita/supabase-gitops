@@ -42,10 +42,12 @@ until docker exec "$CONTAINER_NAME" pg_isready -U postgres >/dev/null 2>&1 && \
       docker exec "$CONTAINER_NAME" psql -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; do
   sleep 1
 done
+sleep 2
 
-# Initialize Supabase compatibility roles and system schemas
+# Initialize Supabase compatibility roles and system schemas with retry loop
 echo "Provisioning Supabase standard roles and schema scaffolding..."
-docker exec -i "$CONTAINER_NAME" psql -U postgres -d postgres << 'EOF' >/dev/null
+for i in {1..10}; do
+  if docker exec -i "$CONTAINER_NAME" psql -U postgres -d postgres << 'EOF' >/dev/null 2>&1
 DO $$
 DECLARE
   r text;
@@ -65,11 +67,36 @@ BEGIN
     END;
   END LOOP;
 END $$;
+-- Grant bypassrls to service_role matching platform
+ALTER ROLE service_role BYPASSRLS;
+ALTER ROLE supabase_admin BYPASSRLS;
+
 CREATE SCHEMA IF NOT EXISTS auth;
 CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE SCHEMA IF NOT EXISTS storage;
 CREATE SCHEMA IF NOT EXISTS graphql;
+
+-- Standard mock auth helper
+CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid AS $$
+  SELECT COALESCE(
+    nullif(current_setting('request.jwt.claim.sub', true), ''),
+    (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub')
+  )::uuid;
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION auth.role() RETURNS text AS $$
+  SELECT COALESCE(
+    nullif(current_setting('request.jwt.claim.role', true), ''),
+    (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role'),
+    current_user
+  );
+$$ LANGUAGE sql STABLE;
 EOF
+  then
+    break
+  fi
+  sleep 1
+done
 echo "[PASS] Ephemeral PostgreSQL container ready with Supabase scaffolding."
 
 # ------------------------------------------------------------------------------
