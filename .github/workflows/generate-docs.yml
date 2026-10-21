@@ -24,50 +24,15 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: master
+          ref: ${{ github.ref }}
 
       - name: Start isolated PostgreSQL test instance
         run: |
           set -euo pipefail
-          docker run --name pg-doc-target -e POSTGRES_PASSWORD=postgres -p 5436:5432 -d postgres:17-alpine
-          until docker exec pg-doc-target pg_isready -U postgres >/dev/null 2>&1 && docker exec pg-doc-target psql -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; do
-            sleep 1
-          done
-          sleep 2
-          for i in {1..10}; do
-            if docker exec -i pg-doc-target psql -U postgres -d postgres << 'EOF'
-          DO $$
-          DECLARE
-            r text;
-          BEGIN
-            FOR r IN SELECT unnest(ARRAY[
-              'anon',
-              'authenticated',
-              'service_role',
-              'authenticator',
-              'supabase_admin',
-              'dashboard_user'
-            ]) LOOP
-              BEGIN
-                EXECUTE format('CREATE ROLE %I NOLOGIN', r);
-              EXCEPTION WHEN duplicate_object THEN
-                NULL;
-              END;
-            END LOOP;
-          END $$;
-          CREATE SCHEMA IF NOT EXISTS auth;
-          CREATE SCHEMA IF NOT EXISTS extensions;
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE SCHEMA IF NOT EXISTS graphql;
-          EOF
-            then
-              break
-            fi
-            sleep 1
-          done
-          echo "Isolated PostgreSQL doc container ready."
+          chmod +x scripts/init_test_pg.sh
+          ./scripts/init_test_pg.sh pg-doc-target 5436
 
       - name: Apply migrations sequentially
         run: |
@@ -84,16 +49,21 @@ jobs:
           set -euo pipefail
           mkdir -p docs
           python3 scripts/generate_schema_docs.py pg-doc-target docs/schema.md
+          if [ ! -s docs/schema.md ]; then
+            echo "::error::Generated documentation file docs/schema.md is empty."
+            exit 1
+          fi
           echo "Generated docs/schema.md ($(wc -l < docs/schema.md) lines)"
 
       - name: Stop and remove test container
         if: always()
         run: |
+          set -euo pipefail
           docker stop pg-doc-target >/dev/null 2>&1 || true
           docker rm pg-doc-target >/dev/null 2>&1 || true
 
       - name: Upload documentation artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: database-schema-docs-${{ github.sha }}
           path: docs/schema.md
@@ -110,11 +80,12 @@ jobs:
             exit 0
           fi
           git commit -m "docs(schema): update database schema docs and ER diagram"
-          git pull --rebase --autostash origin master
-          git push origin master
+          git pull --rebase --autostash origin ${{ github.ref_name }}
+          git push origin HEAD:${{ github.ref_name }}
 
       - name: Publish documentation summary
         run: |
+          set -euo pipefail
           {
             echo "## Schema Documentation Generated"
             echo ""

@@ -12,13 +12,13 @@ permissions:
 
 jobs:
   test:
-    name: Verify migration syntax and execution
+    name: Fast DDL & Syntax Verification (Vanilla PostgreSQL 17 Container)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Validate migration file naming convention
         run: |
@@ -34,58 +34,57 @@ jobs:
           done
           [ "$invalid" -eq 0 ] || exit 1
 
-      - name: Start temporary PostgreSQL test container
+      - name: Scan for destructive DDL operations
+        id: destructive-check
         run: |
           set -euo pipefail
-          docker run --name pg-test -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:17-alpine
-          until docker exec pg-test pg_isready -U postgres >/dev/null 2>&1 && docker exec pg-test psql -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; do
-            sleep 1
+          echo "Scanning migrations for destructive DDL operations..."
+          destructive_ops=""
+          for f in supabase/migrations/*.sql; do
+            [ -e "$f" ] || continue
+            filename=$(basename "$f")
+            for pattern in 'DROP TABLE' 'DROP COLUMN' 'TRUNCATE' 'DROP SCHEMA' 'DROP DATABASE'; do
+              if grep -qiE "^[[:space:]]*${pattern}" "$f"; then
+                matches=$(grep -n -iE "^[[:space:]]*${pattern}" "$f" | awk '{print "Line " $0}')
+                destructive_ops="${destructive_ops}File: ${filename}\n${matches}\n"
+                echo "::warning file=$f::Destructive DDL detected: '${pattern}' in $filename"
+              fi
+            done
           done
-          sleep 2
-          for i in {1..10}; do
-            if docker exec -i pg-test psql -U postgres -d postgres << 'EOF'
-          DO $$
-          DECLARE
-            r text;
-          BEGIN
-            FOR r IN SELECT unnest(ARRAY[
-              'anon',
-              'authenticated',
-              'service_role',
-              'authenticator',
-              'supabase_admin',
-              'dashboard_user'
-            ]) LOOP
-              BEGIN
-                EXECUTE format('CREATE ROLE %I NOLOGIN', r);
-              EXCEPTION WHEN duplicate_object THEN
-                NULL;
-              END;
-            END LOOP;
-          END $$;
-          CREATE SCHEMA IF NOT EXISTS auth;
-          CREATE SCHEMA IF NOT EXISTS extensions;
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE SCHEMA IF NOT EXISTS graphql;
-          EOF
-            then
-              break
-            fi
-            sleep 1
-          done
-          echo "PostgreSQL test container ready."
 
-      - name: Test apply migrations sequentially
+          if [ -n "$destructive_ops" ]; then
+            {
+              echo "### Destructive DDL Warning"
+              echo ""
+              echo "> Warning: Destructive operations were detected in migration files. Ensure peer review and data backup before deployment:"
+              echo '```'
+              printf '%b' "$destructive_ops"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No destructive DDL operations detected."
+          fi
+
+      - name: Execute migration lifecycle integration test suite
+        id: lifecycle-test
         run: |
           set -euo pipefail
-          for f in $(ls supabase/migrations/*.sql | sort); do
-            echo "Applying: $f"
-            docker exec -i pg-test psql -U postgres -d postgres -v ON_ERROR_STOP=1 < "$f"
-          done
-          echo "All migrations applied successfully without errors."
+          chmod +x scripts/test_local_migrations.sh
+          ./scripts/test_local_migrations.sh
 
-      - name: Stop test container
+      - name: Write lint job summary
         if: always()
         run: |
-          docker stop pg-test >/dev/null 2>&1 || true
-          docker rm pg-test >/dev/null 2>&1 || true
+          set -euo pipefail
+          {
+            echo "## Fast DDL & Syntax Verification (Vanilla PostgreSQL 17 Container)"
+            echo ""
+            echo "| Test Dimension | Implementation | Fidelity |"
+            echo "|---|---|---|"
+            echo "| Runtime Environment | Ephemeral \`postgres:17-alpine\` Docker container | Vanilla PostgreSQL 17 |"
+            echo "| Filename Syntax | \`YYYYMMDDHHMMSS_name.sql\` format check | Standardized |"
+            echo "| Destructive DDL | \`DROP TABLE\`, \`DROP COLUMN\`, \`TRUNCATE\` scanner | Safety Guard |"
+            echo "| Migration Lifecycle | Clean init, DDL apply, seed, rollback test | Integration Verified |"
+            echo "| Role Scaffolding | Stubbed roles (\`anon\`, \`authenticated\`, \`service_role\`) | DDL & Grant syntax |"
+            echo "| Scope Boundary | Fast raw PostgreSQL syntax/DDL verification | *Excludes live GoTrue/PostgREST* |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -22,53 +22,18 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1.6.0
         with:
           version: 2.121.0
 
       - name: Start isolated PostgreSQL test container
         run: |
           set -euo pipefail
-          docker run --name pg-advisor-target -e POSTGRES_PASSWORD=postgres -p 5435:5432 -d postgres:17-alpine
-          until docker exec pg-advisor-target pg_isready -U postgres >/dev/null 2>&1 && docker exec pg-advisor-target psql -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; do
-            sleep 1
-          done
-          sleep 2
-          for i in {1..10}; do
-            if docker exec -i pg-advisor-target psql -U postgres -d postgres << 'EOF'
-          DO $$
-          DECLARE
-            r text;
-          BEGIN
-            FOR r IN SELECT unnest(ARRAY[
-              'anon',
-              'authenticated',
-              'service_role',
-              'authenticator',
-              'supabase_admin',
-              'dashboard_user'
-            ]) LOOP
-              BEGIN
-                EXECUTE format('CREATE ROLE %I NOLOGIN', r);
-              EXCEPTION WHEN duplicate_object THEN
-                NULL;
-              END;
-            END LOOP;
-          END $$;
-          CREATE SCHEMA IF NOT EXISTS auth;
-          CREATE SCHEMA IF NOT EXISTS extensions;
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE SCHEMA IF NOT EXISTS graphql;
-          EOF
-            then
-              break
-            fi
-            sleep 1
-          done
-          echo "Isolated PostgreSQL test container ready."
+          chmod +x scripts/init_test_pg.sh
+          ./scripts/init_test_pg.sh pg-advisor-target 5435
 
       - name: Apply migrations sequentially
         run: |
@@ -143,12 +108,19 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           set -euo pipefail
-          LINT_OUTPUT="No remote database URL provided for CLI lint."
-          if [ -n "$SUPABASE_DB_URL" ]; then
-            echo "Running supabase db lint on remote database..."
-            LINT_OUTPUT=$(supabase db lint --db-url "$SUPABASE_DB_URL" --schema public --level warning 2>&1 || true)
-          fi
+          TARGET_URL="${SUPABASE_DB_URL:-postgresql://postgres:postgres@127.0.0.1:5435/postgres}"
+          echo "Running supabase db lint on target database ($([ -n "${SUPABASE_DB_URL:-}" ] && echo "remote secret" || echo "local test container"))..."
+          
+          LINT_EXIT=0
+          LINT_OUTPUT=$(supabase db lint --db-url "$TARGET_URL" --schema public --level warning 2>&1) || LINT_EXIT=$?
           echo "$LINT_OUTPUT"
+
+          if [ "$LINT_EXIT" -ne 0 ] || echo "$LINT_OUTPUT" | grep -qi "ERROR"; then
+            echo "::error::Supabase db lint identified schema errors in public schema."
+          elif echo "$LINT_OUTPUT" | grep -qi "WARN"; then
+            echo "::warning::Supabase db lint identified schema warnings."
+          fi
+
           {
             echo "lint_output<<ENDOFVAL"
             echo "$LINT_OUTPUT"
@@ -158,12 +130,14 @@ jobs:
       - name: Stop and remove test container
         if: always()
         run: |
+          set -euo pipefail
           docker stop pg-advisor-target >/dev/null 2>&1 || true
           docker rm pg-advisor-target >/dev/null 2>&1 || true
 
       - name: Publish performance advisor report
         if: always()
         run: |
+          set -euo pipefail
           {
             echo "## Database Performance & Index Advisor Report"
             echo ""

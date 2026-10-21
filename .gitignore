@@ -31,5 +31,6 @@ coverage.out
 .DS_Store
 Thumbs.db
 
-
 sheets/
+ref.md
+__pycache__/
