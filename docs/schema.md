@@ -1,14 +1,14 @@
 # Database Schema Documentation
 
-> Auto-generated from database schema on `2026-10-20 08:13:42 UTC`.
+> Auto-generated from database schema on `2026-10-21 07:16:42 UTC`.
 
 ## Entity Relationship Diagram
 
 ```mermaid
 erDiagram
-    members ||--o{ projects : "references (team_lead)"
-    projects ||--o{ project_members : "references (pid)"
-    members ||--o{ project_members : "references (uid)"
+    members ||--o{ projects : "projects_team_lead_fkey"
+    projects ||--o{ project_members : "project_members_pid_fkey"
+    members ||--o{ project_members : "project_members_uid_fkey"
     members {
         smallint uid PK
         text name
@@ -45,6 +45,7 @@ erDiagram
 ## Tables Directory
 
 ### `members`
+> **Description**: People. roll_no is the search key; uid is the internal key.
 
 | Column | Type | Nullable | Default | Key |
 |---|---|---|---|---|
@@ -61,6 +62,13 @@ erDiagram
 | `ph_no` | `text` | YES | - | - |
 
 ### `project_members`
+> **Description**: Assignments. All members of a project share one role.
+
+> **Composite Primary Key**: `(pid, uid)`
+
+**Foreign Key Constraints:**
+- `project_members_pid_fkey`: `FOREIGN KEY (pid) REFERENCES projects(pid) ON DELETE CASCADE`
+- `project_members_uid_fkey`: `FOREIGN KEY (uid) REFERENCES members(uid) ON DELETE RESTRICT`
 
 | Column | Type | Nullable | Default | Key |
 |---|---|---|---|---|
@@ -69,6 +77,10 @@ erDiagram
 | `joined_on` | `timestamp with time zone` | NO | `now()` | - |
 
 ### `projects`
+> **Description**: Projects. team_lead need not be an assigned member.
+
+**Foreign Key Constraints:**
+- `projects_team_lead_fkey`: `FOREIGN KEY (team_lead) REFERENCES members(uid) ON DELETE SET NULL`
 
 | Column | Type | Nullable | Default | Key |
 |---|---|---|---|---|
