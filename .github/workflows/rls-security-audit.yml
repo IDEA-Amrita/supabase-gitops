@@ -22,7 +22,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Start isolated PostgreSQL test instance
         run: |
@@ -55,6 +55,8 @@ jobs:
                 NULL;
               END;
             END LOOP;
+            EXECUTE 'ALTER ROLE service_role BYPASSRLS';
+            EXECUTE 'ALTER ROLE supabase_admin BYPASSRLS';
           END $$;
           CREATE SCHEMA IF NOT EXISTS auth;
           CREATE SCHEMA IF NOT EXISTS extensions;
@@ -78,6 +80,14 @@ jobs:
           done
           echo "All migrations applied."
 
+      - name: Execute active behavioral RLS test suite
+        id: behavioral-rls
+        run: |
+          set -euo pipefail
+          echo "Running active role impersonation and cross-tenant isolation tests..."
+          docker exec -i pg-rls-audit psql -U postgres -d postgres -v ON_ERROR_STOP=1 < scripts/audit_rls_behavior.sql
+          echo "Behavioral RLS test suite completed successfully."
+
       - name: Audit Row Level Security compliance
         id: rls-check
         run: |
@@ -85,6 +95,15 @@ jobs:
 
           UNPROTECTED_TABLES=$(docker exec pg-rls-audit psql -U postgres -d postgres -At -c \
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND rowsecurity = false ORDER BY tablename;")
+
+          ZERO_POLICY_TABLES=$(docker exec pg-rls-audit psql -U postgres -d postgres -At -c \
+            "SELECT t.tablename
+             FROM pg_tables t
+             LEFT JOIN pg_policies p ON t.schemaname = p.schemaname AND t.tablename = p.tablename
+             WHERE t.schemaname = 'public' AND t.rowsecurity = true
+             GROUP BY t.tablename
+             HAVING count(p.policyname) = 0
+             ORDER BY t.tablename;")
 
           POLICIES_REPORT=$(docker exec pg-rls-audit psql -U postgres -d postgres -At -c \
             "SELECT t.tablename || ' | ' || CASE WHEN t.rowsecurity THEN 'ENABLED' ELSE 'DISABLED' END || ' | ' || count(p.policyname)
@@ -105,6 +124,11 @@ jobs:
           echo "Audit table status:"
           printf '%s\n' "$POLICIES_REPORT"
 
+          if [ -n "$ZERO_POLICY_TABLES" ]; then
+            echo "::warning::Zero-policy lockout detected! Tables have RLS enabled with 0 policies (locks out all application users):"
+            printf '%s\n' "$ZERO_POLICY_TABLES"
+          fi
+
           if [ -n "$PERMISSIVE_WRITES" ]; then
             echo "::warning::Unrestricted permissive write policies found:"
             printf '%s\n' "$PERMISSIVE_WRITES"
@@ -122,6 +146,9 @@ jobs:
             echo "policies_report<<ENDOFVAL"
             echo "$POLICIES_REPORT"
             echo "ENDOFVAL"
+            echo "zero_policy_tables<<ENDOFVAL"
+            echo "$ZERO_POLICY_TABLES"
+            echo "ENDOFVAL"
             echo "permissive_writes<<ENDOFVAL"
             echo "$PERMISSIVE_WRITES"
             echo "ENDOFVAL"
@@ -130,14 +157,16 @@ jobs:
       - name: Stop and remove test container
         if: always()
         run: |
+          set -euo pipefail
           docker stop pg-rls-audit >/dev/null 2>&1 || true
           docker rm pg-rls-audit >/dev/null 2>&1 || true
 
       - name: Write audit report to Job Summary
         if: always()
         run: |
+          set -euo pipefail
           {
-            echo "## Row Level Security (RLS) & Security Audit"
+            echo "## Row Level Security (RLS) & Behavioral Security Audit"
             echo ""
             if [ "${{ steps.rls-check.conclusion }}" = "success" ]; then
               echo "All public database tables comply with Row Level Security policies."
@@ -149,12 +178,31 @@ jobs:
                 echo "| \`$table\` | $status | $count |"
               done <<< "${{ steps.rls-check.outputs.policies_report }}"
               echo ""
+              echo "### Active Behavioral Access Verification"
+              echo "- **Anonymous Role (\`anon\`)**: Unauthorized writes and restricted reads blocked."
+              echo "- **Authenticated Users**: Isolated to owner identity (\`auth.uid() = user_id\`); cross-tenant access prohibited."
+              echo "- **Service Role (\`service_role\`)**: Administrative bypass verified for backend operational tasks."
+              echo ""
+              if [ -n "${{ steps.rls-check.outputs.zero_policy_tables }}" ]; then
+                echo "### ⚠️ Zero-Policy Lockout Warning"
+                echo "> The following tables have RLS enabled with 0 policies, blocking all non-service_role access:"
+                echo '```sql'
+                while IFS= read -r zt; do
+                  [ -z "$zt" ] && continue
+                  echo "-- Remediation for public.$zt:"
+                  echo "CREATE POLICY \"Allow authenticated read\" ON public.$zt FOR SELECT TO authenticated USING (true);"
+                  echo "CREATE POLICY \"Allow owner modify\" ON public.$zt FOR ALL TO authenticated USING (auth.uid() = user_id);"
+                done <<< "${{ steps.rls-check.outputs.zero_policy_tables }}"
+                echo '```'
+                echo ""
+              fi
               if [ -n "${{ steps.rls-check.outputs.permissive_writes }}" ]; then
-                echo "### Permissive Write Policies Audit"
+                echo "### ⚠️ Permissive Write Policies Audit"
                 echo "> Warning: The following policies allow unrestricted writes:"
                 echo '```'
                 echo "${{ steps.rls-check.outputs.permissive_writes }}"
                 echo '```'
+                echo "**Remediation:** Replace \`USING (true)\` / \`WITH CHECK (true)\` with role-scoped checks (e.g. \`auth.uid() = user_id\`)."
               fi
             else
               echo "**RLS security audit failed.** One or more public tables lack Row Level Security."

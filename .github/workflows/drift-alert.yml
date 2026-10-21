@@ -18,12 +18,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: master
+          ref: ${{ github.ref }}
 
       - name: Set up Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1.6.0
         with:
           version: 2.121.0
 
@@ -34,8 +34,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          pull_output=$(supabase db pull --db-url "$SUPABASE_DB_URL" 2>&1) || true
-          echo "$pull_output"
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not configured."
+            exit 1
+          fi
+
+          echo "Inspecting schema drift via supabase db pull --declarative..."
+          set +e
+          pull_output=$(supabase db pull --declarative --db-url "$SUPABASE_DB_URL" 2>&1)
+          pull_exit=$?
+          set -e
+
+          printf '%s\n' "$pull_output"
+
+          if [ "$pull_exit" -ne 0 ]; then
+            echo "::error::supabase db pull command failed with exit code $pull_exit."
+            {
+              echo "## Workflow Infrastructure Error"
+              echo ""
+              echo "Failed to inspect database schema drift. The command \`supabase db pull\` returned exit code $pull_exit:"
+              echo '```'
+              echo "$pull_output"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$pull_exit"
+          fi
 
           if echo "$pull_output" | grep -qi "No schema changes found"; then
             echo "drift_detected=false" >> "$GITHUB_OUTPUT"
@@ -49,8 +72,20 @@ jobs:
         if: steps.check.outputs.drift_detected == 'true'
         run: |
           set -euo pipefail
-          echo "## Schema Drift Detected" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Changes were detected in your remote Supabase database that are not yet committed as migration files." >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "To capture these changes into a version-controlled migration file, run the **Capture database migrations** workflow." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Schema Drift Detected"
+            echo ""
+            echo "Changes were detected in your remote Supabase database that are not yet committed as migration files."
+            echo ""
+            echo "To capture these changes into a version-controlled migration file, run the **Capture database migrations** workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report sync status
+        if: steps.check.outputs.drift_detected == 'false'
+        run: |
+          set -euo pipefail
+          {
+            echo "## Schema In Sync"
+            echo ""
+            echo "No schema drift detected. The remote database schema matches the local migrations."
+          } >> "$GITHUB_STEP_SUMMARY"

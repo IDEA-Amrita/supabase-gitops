@@ -19,12 +19,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: master
+          ref: ${{ github.ref }}
 
       - name: Set up Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1.6.0
         with:
           version: 2.121.0
 
@@ -33,12 +33,26 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           set -euo pipefail
+          if [ -z "${SUPABASE_DB_URL:-}" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not configured or empty."
+            exit 1
+          fi
+
           mkdir -p types
-          supabase gen types --lang=typescript --db-url "$SUPABASE_DB_URL" --schema public > types/database.types.ts
+          echo "Generating TypeScript types from database schema..."
+          supabase gen types --lang=typescript --db-url "$SUPABASE_DB_URL" --schema public > types/database.types.ts.tmp
+
+          if [ ! -s types/database.types.ts.tmp ]; then
+            echo "::error::Generated types/database.types.ts is empty. Verify remote database connection and permissions."
+            rm -f types/database.types.ts.tmp
+            exit 1
+          fi
+
+          mv types/database.types.ts.tmp types/database.types.ts
           echo "Generated types/database.types.ts ($(wc -l < types/database.types.ts) lines)"
 
       - name: Upload TypeScript types artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: database-types-${{ github.sha }}
           path: types/database.types.ts
@@ -55,5 +69,5 @@ jobs:
             exit 0
           fi
           git commit -m "chore(types): update database.types.ts from remote schema"
-          git pull --rebase --autostash origin master
-          git push origin master
+          git pull --rebase --autostash origin ${{ github.ref_name }}
+          git push origin HEAD:${{ github.ref_name }}

@@ -9,6 +9,11 @@ on:
         required: true
         type: string
         default: ""
+      use_ephemeral_staging:
+        description: 'Provision an ephemeral PostgreSQL container as Staging target if SUPABASE_STAGING_DB_URL is not set'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -20,34 +25,82 @@ concurrency:
 jobs:
   deploy-staging:
     name: Deploy migrations to Staging environment
-    if: >
-      github.ref == 'refs/heads/master' &&
-      inputs.confirm == 'promote'
+    if: inputs.confirm == 'promote'
     runs-on: ubuntu-latest
     environment: staging
     timeout-minutes: 15
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: master
+          ref: ${{ github.ref }}
 
       - name: Set up Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1.6.0
         with:
           version: 2.121.0
+
+      - name: Validate Staging environment configuration
+        id: validate-staging
+        env:
+          STAGING_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+          PROD_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          echo "Validating Staging environment configuration..."
+
+          if [ -z "$STAGING_URL" ]; then
+            if [ "${{ inputs.use_ephemeral_staging }}" = "true" ]; then
+              echo "Starting ephemeral staging PostgreSQL instance for promotion validation..."
+              chmod +x scripts/init_test_pg.sh
+              ./scripts/init_test_pg.sh pg-staging-ephemeral 5437
+              STAGING_URL="postgresql://postgres:postgres@localhost:5437/postgres?sslmode=disable"
+              echo "RESOLVED_STAGING_URL=$STAGING_URL" >> "$GITHUB_ENV"
+              echo "Ephemeral staging container initialized on port 5437."
+            else
+              echo "::error::SUPABASE_STAGING_DB_URL is not configured. Staging and production databases must be configured independently."
+              {
+                echo "### Target Configuration Error"
+                echo ""
+                echo "Promotion halted: \`SUPABASE_STAGING_DB_URL\` secret is missing."
+                echo "The staging promotion pipeline enforces strict environment isolation and cannot fall back to production."
+                echo "To test promotion without a remote staging instance, enable \`use_ephemeral_staging\` in workflow inputs."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          else
+            echo "RESOLVED_STAGING_URL=$STAGING_URL" >> "$GITHUB_ENV"
+          fi
+
+          if ! [[ "$STAGING_URL" =~ ^postgres(ql)?:// ]]; then
+            echo "::error::SUPABASE_STAGING_DB_URL is not a valid PostgreSQL connection URI."
+            exit 1
+          fi
+
+          if [ -n "$PROD_URL" ]; then
+            STAGING_HOST=$(echo "$STAGING_URL" | sed -E 's|.*@([^:/]+).*|\1|')
+            PROD_HOST=$(echo "$PROD_URL" | sed -E 's|.*@([^:/]+).*|\1|')
+            if [ "$STAGING_HOST" = "$PROD_HOST" ] && [ -n "$STAGING_HOST" ]; then
+              echo "::error::Target Collision: SUPABASE_STAGING_DB_URL points to the same host as SUPABASE_DB_URL ($STAGING_HOST)."
+              {
+                echo "### Target Collision Detected"
+                echo ""
+                echo "Promotion halted: Staging points to the same database host as production (\`$STAGING_HOST\`)."
+                echo "Staging must target an independent database instance to protect production integrity."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          fi
+
+          echo "Staging environment configuration validated successfully."
 
       - name: Deploy to Staging
         id: staging-deploy
         env:
-          TARGET_URL: ${{ secrets.SUPABASE_STAGING_DB_URL || secrets.SUPABASE_DB_URL }}
+          TARGET_URL: ${{ env.RESOLVED_STAGING_URL }}
         run: |
           set -euo pipefail
-          if [ -z "$TARGET_URL" ]; then
-            echo "::error::No staging database URL configured."
-            exit 1
-          fi
 
           echo "Backing up staging schema..."
           mkdir -p /tmp/staging
@@ -60,7 +113,7 @@ jobs:
           supabase migration list --db-url "$TARGET_URL" | tee /tmp/staging/migration_state.txt
 
       - name: Upload staging pre-migration backup
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: pre-staging-backup-${{ github.run_id }}
           path: /tmp/staging/pre_deploy_staging.sql
@@ -68,6 +121,7 @@ jobs:
 
       - name: Publish staging summary
         run: |
+          set -euo pipefail
           {
             echo "### Staging Deployment Passed"
             echo ""
@@ -86,12 +140,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: master
+          ref: ${{ github.ref }}
 
       - name: Set up Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1.6.0
         with:
           version: 2.121.0
 
@@ -106,6 +160,42 @@ jobs:
             exit 1
           fi
 
+          echo "Auditing production remote migration history..."
+          local_versions=$(
+            ls supabase/migrations/*.sql 2>/dev/null \
+              | xargs -r -I{} basename {} \
+              | grep -oP '^\d{14}' \
+              | sort -u \
+            || true
+          )
+
+          set +e
+          raw_migration_list=$(supabase migration list --db-url "$TARGET_URL" 2>&1)
+          list_exit=$?
+          set -e
+
+          if [ "$list_exit" -eq 0 ]; then
+            remote_versions=$(
+              tr -d '`' <<< "$raw_migration_list" \
+                | awk -F'|' '
+                  NF >= 2 {
+                    remote = $2
+                    gsub(/^[ \t]+|[ \t]+$/, "", remote)
+                    if (remote ~ /^[0-9]{14}$/) print remote
+                  }
+                ' \
+                | sort -u \
+              || true
+            )
+            missing_locally=$(comm -13 <(echo "$local_versions") <(echo "$remote_versions") || true)
+            if [ -n "$missing_locally" ]; then
+              echo "::warning::Reconciling unmanaged remote versions before deployment: $missing_locally"
+              for v in $missing_locally; do
+                supabase migration repair --db-url "$TARGET_URL" --status reverted "$v" || true
+              done
+            fi
+          fi
+
           echo "Backing up production schema..."
           mkdir -p /tmp/production
           supabase db dump --db-url "$TARGET_URL" -f /tmp/production/pre_deploy_production.sql
@@ -117,7 +207,7 @@ jobs:
           supabase migration list --db-url "$TARGET_URL" | tee /tmp/production/migration_state.txt
 
       - name: Upload production pre-migration backup
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: pre-production-backup-${{ github.run_id }}
           path: /tmp/production/pre_deploy_production.sql
@@ -139,14 +229,15 @@ jobs:
             echo "TypeScript types are already up-to-date."
           else
             git commit -m "chore(types): auto-sync database.types.ts after production promotion"
-            git pull --rebase --autostash origin master
-            git push origin HEAD:master
+            git pull --rebase --autostash origin ${{ github.ref_name }}
+            git push origin HEAD:${{ github.ref_name }}
             echo "Successfully committed and pushed updated TypeScript types."
           fi
 
       - name: Publish pipeline summary
         if: always()
         run: |
+          set -euo pipefail
           {
             echo "## Multi-Environment Promotion Pipeline Summary"
             echo ""
@@ -166,7 +257,8 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: |
-          if [ -n "$WEBHOOK_URL" ]; then
+          set -euo pipefail
+          if [ -n "${WEBHOOK_URL:-}" ]; then
             STATUS="${{ job.status }}"
             curl -s -X POST -H "Content-Type: application/json" \
               -d "{\"text\": \"Promotion Pipeline: ${STATUS} on ${{ github.repository }} (Run ${{ github.run_id }})\"}" \
